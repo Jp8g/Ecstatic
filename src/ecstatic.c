@@ -110,7 +110,7 @@ void EcstaticDestroyWorld(EcstaticWorld *world) {
     if (world->archetypes) {
         for (uint32_t i = 0; i < world->archetypeCount; i++) {
             free(world->archetypes[i].archetypeEntityIdToEntityId);
-            free(world->archetypes[i].componentMask);
+            if (world->archetypes[i].componentMask) free(world->archetypes[i].componentMask);
 
             for (uint32_t j = 0; j < world->archetypes[i].componentCount; j++) {
                 free(world->archetypes[i].components[j]);
@@ -140,6 +140,11 @@ void EcstaticDestroyWorld(EcstaticWorld *world) {
 }
 
 EcstaticComponentId EcstaticCreateComponent(EcstaticWorld* world, uint64_t componentSize) {
+    if (componentSize < 1) {
+        EcstaticError(__func__, "Failed to create component: componentSize cannot be less than one");
+        return COMPONENT_INVALID;
+    }
+
     world->componentSizes[world->componentCount] = componentSize;
     world->componentCount++;
 
@@ -163,9 +168,9 @@ EcstaticEntityId EcstaticCreateEntity(EcstaticWorld* world) {
     uint32_t archetypeId = EcstaticGetArchetypeIdFromComponentMask(world, NULL, 0);
     
     if (archetypeId == ARCHETYPE_INVALID) {
-        archetypeId = EcstaticCreateArchetype(world, NULL, 0, 1);
+        archetypeId = EcstaticCreateArchetype(world, 0, 1, 1);
     }
-
+    
     EcstaticArchetype* archetype = &world->archetypes[archetypeId];
 
     if (archetype->entityCount >= archetype->entityCapacity) {
@@ -267,13 +272,13 @@ void EcstaticUpdateEntityComponents(EcstaticWorld* world, EcstaticEntityId entit
         EcstaticComponentId componentId = EcstaticGetComponentIdFromArchetypeComponentId(oldArchetype->componentMask, oldArchetype->componentMaskCount, i);
         uint16_t archetypeComponentId = EcstaticGetArchetypeComponentIdFromComponentId(newArchetype->componentMask, newArchetype->componentMaskCount, componentId, true);
 
-        if (archetypeComponentId != COMPONENT_INVALID) {
+        if (componentId != COMPONENT_INVALID && archetypeComponentId != COMPONENT_INVALID) {
             uint32_t componentSize = world->componentSizes[componentId];
 
             uint8_t* destinationComponent = (uint8_t*)newArchetype->components[archetypeComponentId];
             uint8_t* sourceComponent = (uint8_t*)oldArchetype->components[i];
 
-            memmove(destinationComponent + (size_t)newArchetypeEntityId * componentSize, sourceComponent + (size_t)oldArchetypeEntityId * componentSize, componentSize);
+            memmove(destinationComponent + (newArchetypeEntityId * componentSize), sourceComponent + (oldArchetypeEntityId * componentSize), componentSize);
         }
     }
 
@@ -451,20 +456,15 @@ uint32_t EcstaticCreateArchetype(EcstaticWorld* world, uint64_t* componentMask, 
 
     EcstaticArchetype* archetype = &archetypes[world->archetypeCount - 1];
 
+    archetype->componentMask = calloc(1, (componentMaskCount == 0 ? 1 : componentMaskCount) * sizeof(uint64_t));
+
     if (componentMaskCount > 0) {
-        if (!componentMask) {
-            EcstaticError(__func__, "componentMask is NULL but componentMaskCount is >0");
-            return ARCHETYPE_INVALID;
-        }
-
-        archetype->componentMask = malloc(componentMaskCount * sizeof(uint64_t));
-
         if (!archetype->componentMask) {
             EcstaticError(__func__, "Failed to allocate %zu bytes for uint64_t* componentMask", componentMaskCount * sizeof(uint64_t));
             return ARCHETYPE_INVALID;
         }
 
-        memcpy(archetype->componentMask, componentMask, componentMaskCount * sizeof(uint64_t));
+        if (componentMask) memcpy(archetype->componentMask, componentMask, componentMaskCount * sizeof(uint64_t));
     }
 
     archetype->componentMaskCount = componentMaskCount;
@@ -483,7 +483,7 @@ uint32_t EcstaticCreateArchetype(EcstaticWorld* world, uint64_t* componentMask, 
     uint32_t componentCount = 0;
 
     for (uint16_t i = 0; i < componentMaskCount; i++) {
-        componentCount += __builtin_popcountll(componentMask[i]);
+        componentCount += __builtin_popcountll(archetype->componentMask[i]);
     }
 
     archetype->componentCount = componentCount;
@@ -492,7 +492,7 @@ uint32_t EcstaticCreateArchetype(EcstaticWorld* world, uint64_t* componentMask, 
 
     archetype->entityCount = 0;
 
-    archetype->components = malloc(componentCount * sizeof(void*));
+    archetype->components = calloc(1, componentCount * sizeof(void*));
     if (!archetype->components) {
         EcstaticError(__func__, "Failed to allocate %zu bytes for void** components", componentCount * sizeof(void*));
         free(archetype->archetypeEntityIdToEntityId);
@@ -501,13 +501,13 @@ uint32_t EcstaticCreateArchetype(EcstaticWorld* world, uint64_t* componentMask, 
     }
 
     for (uint16_t i = 0; i < componentCount; i++) {
-        uint16_t globalComponentId = EcstaticGetComponentIdFromArchetypeComponentId(componentMask, componentMaskCount, i);
+        uint16_t globalComponentId = EcstaticGetComponentIdFromArchetypeComponentId(archetype->componentMask, componentMaskCount, i);
 
-        uint32_t componentSize = world->componentSizes[globalComponentId];
+        uint32_t size = initialEntityCapacity * world->componentSizes[globalComponentId];
 
-        archetype->components[i] = malloc(initialEntityCapacity * componentSize);
+        archetype->components[i] = malloc(size);
         if (!archetype->components[i]) {
-            EcstaticError(__func__, "Failed to allocate %zu bytes for void* components[i]", initialEntityCapacity * componentSize);
+            EcstaticError(__func__, "Failed to allocate %zu bytes for void* components[i]", size);
 
             for (uint16_t j = 0; j < i; j++) {
                 free(archetype->components[j]);
@@ -520,7 +520,7 @@ uint32_t EcstaticCreateArchetype(EcstaticWorld* world, uint64_t* componentMask, 
         }
     }
 
-    uint32_t hash = EcstaticGetArchetypeIdHashFromComponentMask(world, componentMask, componentMaskCount);
+    uint32_t hash = EcstaticGetArchetypeIdHashFromComponentMask(world, archetype->componentMask, componentMaskCount);
 
     world->componentMaskToArchetypeBucketArchetypeCounts[hash]++;
 
